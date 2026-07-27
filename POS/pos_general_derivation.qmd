@@ -1,0 +1,547 @@
+---
+title: "Probability of Success (PoS): General Derivation"
+subtitle: "Continuous, Binary, and Time-to-Event Endpoints"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: false
+---
+
+
+# General Derivation
+
+$$
+\begin{aligned}
+\text{PoS} &= \Pr(\text{Ph3 success} \mid \text{Observed Ph2 data}) \\
+&= \Pr\big(\text{reject } H_0 \text{ in Ph3} \mid \theta = \hat\theta_{P2}\big) \\
+&= \Pr\big(|Z| > z_c \mid \theta = \hat\theta_{P2}\big)
+\end{aligned}
+$$
+
+which is the **conditional power**.
+
+In other words, we take the treatment effect **estimated from Phase 2**,
+$\hat\theta_{P2}$, and **pass it into the Phase 3 power calculation as if it were the true effect**. That is, "conditioning on Phase 2 data" does not mean averaging over a random Phase 2 effect. It means given
+the one specific estimate Phase 2 actually produced, what is the probability that a Phase 3 trial designed around that estimate would succeed? $\theta$ is the true (unknown) treatment effect, and $\hat\theta_{P2}$ is the point estimate of $\theta$ computed from the observed Phase 2 data. Once Phase 2 has been run and $\hat\theta_{P2}$ is a known number, PoS is simply the power of the planned Phase 3 test, evaluated at that number.
+
+This is the **frequentist convention**: $\theta$ is treated as a fixed
+unknown constant, not a random variable, so Phase 2 data can only enter
+through the summary statistic $\hat\theta_{P2}$ rather than through a posterior distribution over $\theta$.
+
+
+
+## One-sided vs. two-sided
+
+Phase 3 trials are typically analyzed **one-sided**, so **one-sided is the default** used throughout this
+document and in the corresponding R code (`alternative = "one.sided"`). The two-sided form is retained as another option
+(`alternative = "two.sided"`).
+
+$$
+\text{Rejection region:} \qquad
+\begin{cases}
+Z > z_c, \quad z_c = \Phi^{-1}(1-\alpha) & \text{one-sided (default)} \\[4pt]
+|Z| > z_c, \quad z_c = \Phi^{-1}(1-\alpha/2) & \text{two-sided}
+\end{cases}
+$$
+
+## Notation
+
+- $\theta$: the true (unknown) treatment effect, on the **natural scale**
+  (mean difference / risk difference / log hazard ratio). For example,
+  for a continuous outcome such as systolic blood pressure, the true
+  group mean difference $\theta = 12$ mmHg.
+- $\hat\theta_{P2}$: Phase 2 point estimate of $\theta$ (natural scale).
+- $\hat\theta_{P3}$: Phase 3 point estimate.
+- $\widehat{SE} = \widehat{SE}(\hat\theta_{P3})$: the standard error of
+  the **Phase 3** estimator $\hat\theta_{P3}$. It is computed from the
+  planned Phase 3 sample size, but evaluated by plugging in the Phase 2
+  estimates for whatever nuisance parameters the SE formula depends on
+  (e.g. $\sigma$, or the assumed rates).
+- $SE_0$: the standard error evaluated **under the null hypothesis**
+  ($\theta=\theta_0$) in Phase 3 testing.
+- $\theta_0$: the Phase 3 null hypothesis ($H_0:\theta=\theta_0$). For
+  superiority, $\theta_0=0$ ("no difference"; $\log(1)=0$ on the log
+  hazard ratio scale). For non-inferiority, $\theta_0$ is a prespecified
+  nonzero margin, e.g. a hazard ratio margin of $0.8$ gives
+  $\theta_0=\log(0.8)\approx-0.223$.
+- $z_c$: the critical value, computed by $\Phi^{-1}(1-\alpha)$ (one-sided) or $\Phi^{-1}(1-\alpha/2)$ (two-sided).
+- $\delta = \dfrac{\hat\theta_{P2}-\theta_0}{\widehat{SE}}$: the
+  standardized effect size.
+- $n_T, n_C$: the planned Phase 3 sample sizes for the treatment and
+  control groups, respectively.
+
+A test statistic's denominator is either $\widehat{SE}$ or $SE_0$,
+depending on how the test is constructed:
+
+- **Wald test**: denominator is $\widehat{SE}$. Applies to the **continuous** t-test and the **time-to-event**
+  log-rank test in this document.
+- **Score test**: denominator is $SE_0$ (evaluated under $H_0$). Applies to the **binary** stratified Miettinen-Nurminen test.
+
+When the test is a score test, define $r = SE_0/\widehat{SE}$. The critical value gets rescaled to $z_c\cdot r$, while $\delta$ itself stays unchanged.
+
+
+$$
+\hat\theta_{P3} \sim N(\theta,\ \widehat{SE}^2) \qquad \text{[Ph3 estimator's sampling distribution, natural scale]}
+$$
+
+**Wald test** ($\widehat{SE}$ in the denominator):
+
+$$
+Z = \frac{\hat\theta_{P3} - \theta_0}{\widehat{SE}} \qquad \Longrightarrow \qquad
+\text{PoS} = \Phi(\delta - z_c) \ \text{(one-sided)}, \qquad
+\text{PoS} = \Phi(\delta-z_c)+\Phi(-\delta-z_c) \ \text{(two-sided)}
+$$
+
+**Score test** ($SE_0$ in the denominator):
+
+$$
+Z = \frac{\hat\theta_{P3} - \theta_0}{SE_0} \qquad \Longrightarrow \qquad
+\text{PoS} = \Phi(\delta - z_c r) \ \text{(one-sided)}, \qquad
+\text{PoS} = \Phi(\delta-z_c r)+\Phi(-\delta-z_c r) \ \text{(two-sided)}
+$$
+
+
+# Three Endpoints
+
+## Continuous
+
+**$\hat\theta$ (natural scale) for this endpoint:**
+
+$$
+\hat\theta_{P2} = \bar y_{T,P2} - \bar y_{C,P2} \qquad \text{(Phase 2 observed mean difference)}
+$$
+and
+
+
+$$
+\hat y_T - \hat y_C \sim N\!\left(\theta,\ \sigma^2\Big(\tfrac{1}{n_T}+\tfrac{1}{n_C}\Big)\right), \qquad \theta = \mu_T - \mu_C
+$$
+where $n_T$ and $n_C$ are the sample sizes from treatment and control groups, respectively.
+
+**Test statistics (t-test)**:
+
+
+$$
+T = \frac{\hat y_T - \hat y_C - \theta_0}{\widehat{SE}}, \qquad \widehat{SE} = \sigma\sqrt{1/n_T + 1/n_C}
+$$
+where $\sigma$ is the common (pooled) within-arm standard deviation,
+assumed equal in both arms. Since $\sigma$ is unknown, it is replaced by
+its Phase 2 pooled estimate:
+
+$$
+\hat\sigma_{P2} = \sqrt{\frac{(n_{T,P2}-1)\,S_{T,P2}^2 + (n_{C,P2}-1)\,S_{C,P2}^2}{n_{T,P2}+n_{C,P2}-2}}
+$$
+
+computed by `ph2_summary_continuous()` from the raw Phase 2 arm data
+(same plug-in logic as $\hat\theta_{P2}$: Phase 2 supplies the point
+estimate, which is carried forward into the Phase 3 calculation as if it
+were the true value).
+
+Because $\sigma$ is estimated rather than known, $T$ is not normally
+distributed even under the true effect: it is a ratio of a normal
+numerator to an independent $\sqrt{\chi^2_{df}/df}$ term (since $S_p^2$ is
+itself chi-square distributed under normality, independent of the mean).
+This ratio is exactly Student's $t$, so using the noncentral $t$ below
+gives the exact power of the planned Phase 3 t-test, not an approximation.
+A normal approximation would slightly understate the true uncertainty
+(and so overstate PoS), particularly at small to moderate $n$; the two
+converge as $df\to\infty$.
+
+**Distribution of $T$:**
+
+$$
+T \sim t_{df}(\text{ncp}), \qquad df = n_T+n_C-2, \qquad \text{ncp} = \delta = \frac{\hat\theta_{P2}-\theta_0}{\widehat{SE}}
+$$
+
+$T$ is the **test statistic** (computed from data); $t_c$ is the fixed
+**critical value** $T$ must clear to reject $H_0$, computed from the
+**central** $t$-distribution ($\text{ncp}=0$) at level $\alpha$:
+$t_c=F_{t_{df}}^{-1}(1-\alpha)$ (one-sided) or $F_{t_{df}}^{-1}(1-\alpha/2)$
+(two-sided) -- it does not depend on $\hat\theta_{P2}$. The **noncentral**
+$t$-distribution above, shifted by $\text{ncp}=\delta$, describes where $T$
+is centered once the true effect is assumed to equal $\hat\theta_{P2}$;
+PoS below evaluates that noncentral distribution's CDF at the point $t_c$.
+
+**Analytic PoS (one-sided):**
+
+$$
+\text{PoS}_{\text{analytic}} = \Pr\big(T > t_c \mid \theta=\hat\theta_{P2}\big) = 1 - F_{t_{df}(\text{ncp})}(t_c)
+$$
+
+**Analytic PoS (two-sided):**
+
+$$
+\text{PoS}_{\text{analytic}} = F_{t_{df}(\text{ncp})}(-t_c) + \Big[1 - F_{t_{df}(\text{ncp})}(t_c)\Big]
+$$
+
+**Simulated PoS** (one-sided):
+
+$$
+\text{PoS}_{\text{sim}} = \frac{1}{N_{\text{sim}}}\sum_{i=1}^{N_{\text{sim}}} \mathbb{1}\Big\{\,T_i > t_c\,\Big\}
+$$
+
+where, for each $i=1,\dots,N_{\text{sim}}$, $y_T^{(i)} \sim N(\hat\theta_{P2},\ \sigma^2/n_T)$
+and $y_C^{(i)} \sim N(0,\ \sigma^2/n_C)$ are drawn, $T_i$ is computed from that simulated dataset.
+
+
+## Binary
+
+**$\hat\theta$ (natural scale) for this endpoint:**
+
+$$
+\hat\theta_{P2} = \hat p_{T,P2} - \hat p_{C,P2} \qquad \text{(Phase 2 observed risk difference)}
+$$
+
+
+$$
+\hat p_T - \hat p_C \;\dot\sim\; N(\theta,\ \widehat{SE}^2), \qquad \theta = \pi_T - \pi_C, \qquad \widehat{SE}^2 = \frac{p_T(1-p_T)}{n_T} + \frac{p_C(1-p_C)}{n_C}
+$$
+
+This normal approximation is asymptotic (CLT), unlike the continuous
+endpoint's exact noncentral $t$. It degrades when $p_T$ or $p_C$ is near
+$0$ or $1$, since convergence depends on $np(1-p)$ (rule of thumb:
+$np\ge5$ and $n(1-p)\ge5$ for both arms); exact enumeration methods
+(e.g. Fisher's or Barnard's) avoid this in rare-event settings.
+
+The planned Ph3 test (stratified Miettinen-Nurminen) is a **score test**:
+
+$$
+SE_0^2 = \left[\frac{\tilde p_1(1-\tilde p_1)}{n_T} + \frac{\tilde p_2(1-\tilde p_2)}{n_C}\right]\cdot\frac{N}{N-1}
+$$
+
+$$
+Z = \frac{\hat p_T - \hat p_C - \theta_0}{SE_0}
+$$
+
+Because this test's denominator ($SE_0$) differs from the estimator's
+estimated standard error ($\widehat{SE}$), the power calculation needs a
+correction factor $r = SE_0/\widehat{SE}$:
+
+$$
+\delta = \frac{\hat\theta_{P2} - \theta_0}{\widehat{SE}}.
+$$
+Under the assumption that $(p_T,p_C)$, $\hat p_T-\hat p_C$ is asymptotically normal:
+
+$$
+\hat p_T - \hat p_C \;\dot\sim\; N(\theta,\ \widehat{SE}^2), \qquad \theta = p_T-p_C,
+$$
+
+we can write $\hat p_T-\hat p_C - \theta_0 = (\theta-\theta_0) + \widehat{SE}\cdot\varepsilon$, with $\varepsilon\sim N(0,1)$.
+
+
+$$
+Z = \frac{(\theta-\theta_0) + \widehat{SE}\cdot\varepsilon}{SE_0} = \frac{\theta-\theta_0}{SE_0} + \frac{\widehat{SE}}{SE_0}\,\varepsilon
+$$
+Define
+$\delta=(\theta-\theta_0)/\widehat{SE}$ and $r=SE_0/\widehat{SE}$. Rewrite the first term:
+
+$$
+\frac{\theta-\theta_0}{SE_0} = \frac{\theta-\theta_0}{\widehat{SE}}\cdot\frac{\widehat{SE}}{SE_0} = \frac{\delta}{r}
+$$
+
+and the second term's coefficient is $\widehat{SE}/SE_0 = 1/r$. So:
+
+**Distribution of $Z$:**
+
+$$
+Z \sim N\!\left(\frac{\delta}{r},\ \frac{1}{r^2}\right)
+$$
+
+For a one-sided test at level $\alpha$
+with critical value $z_c=\Phi^{-1}(1-\alpha)$:
+
+$$
+\Pr(Z>z_c) = \Pr\!\left(\frac{\delta}{r}+\frac{1}{r}\varepsilon > z_c\right) = \Pr\big(\varepsilon > z_c r - \delta\big) = \Phi(\delta - z_c r)
+$$
+
+
+Substituting $\hat\theta_{P2}$
+for $\theta$ (and hence for $\delta$) gives the PoS:
+
+**Analytic PoS (one-sided):** $z_c=\Phi^{-1}(1-\alpha)$
+
+$$
+\text{PoS}_{\text{analytic}} = \Phi(\delta - z_c r)
+$$
+
+**Analytic PoS (two-sided):** $z_c=\Phi^{-1}(1-\alpha/2)$
+
+$$
+\text{PoS}_{\text{analytic}} = \Phi(\delta - z_c r) + \Phi(-\delta - z_c r)
+$$
+
+
+**Simulated PoS**: it samples from the true binomial
+distribution rather than a normal approximation (one-sided)):
+
+$$
+\text{PoS}_{\text{sim}} = \frac{1}{N_{\text{sim}}}\sum_{i=1}^{N_{\text{sim}}} \mathbb{1}\Big\{\,Z_i > z_c\,\Big\}
+$$
+
+where, for each $i=1,\dots,N_{\text{sim}}$, $x_{T,k}^{(i)} \sim \text{Binomial}(n_{T,k}, p_{T,k})$
+and $x_{C,k}^{(i)} \sim \text{Binomial}(n_{C,k}, p_{C,k})$ are drawn for each
+stratum $k$ (using the Phase 2-derived assumed rates $p_{T,k}=\hat p_{T,k,P2}$,
+$p_{C,k}=\hat p_{C,k,P2}$), the restricted MLE $(\tilde p_{1,k}^{(i)}, \tilde p_{2,k}^{(i)})$
+(constrained to $\tilde p_{1,k}^{(i)} - \tilde p_{2,k}^{(i)} = \theta_0$) and
+$SE_{0,k}^{(i)}$ are recomputed from the simulated counts, $Z_i$ is built
+from those simulated data exactly as the planned Phase 3 M&N test would be,
+and the indicator checks whether it clears $z_c$ (use $|Z_i|>z_c$ for
+two-sided).
+
+
+## Time-to-Event
+
+
+**$\hat\theta$ (natural scale) for this endpoint:**
+
+$$
+\hat\theta_{P2} = \log(\widehat{HR}_{P2}) \qquad \text{(Phase 2 estimated log hazard ratio)}.
+$$
+
+Throughout this section we assume **proportional hazards (PH)**:
+$h_T(t) = HR\cdot h_C(t)$ for all $t$, where $h_C(t)$ is the (possibly
+time-varying) control-arm hazard. Under PH, a single hazard ratio $HR$
+summarizes the treatment effect regardless of the shape of $h_C(t)$ --
+this is what lets the same Schoenfeld formula below apply whether the
+baseline hazard is constant, piecewise-constant, or Weibull-shaped.
+
+$$
+\log(\widehat{HR}) \sim N\!\left(\theta,\ \widehat{SE}^2\right), \qquad \widehat{SE} = \frac{1}{\sqrt{d\,\phi(1-\phi)}}, \qquad \theta = \log(HR)
+$$
+
+- $d$ = expected number of Ph3 events (depends on the assumed baseline hazard shape, e.g. Weibull / piecewise-exponential)
+- $\phi$ = Ph3 treatment allocation fraction, $n_T/(n_T+n_C)$
+
+### Expected number of events
+
+$d$ is not a free input in general -- it is derived from the planned
+design (arm sizes, accrual, follow-up) and the assumed baseline hazard.
+Let $S_T(t)$, $S_C(t)$ denote the assumed survival functions for the
+treatment and control arms (related by PH via $HR$), and assume **uniform
+accrual**: subjects enter the trial at times $u$ drawn uniformly over
+$[0,\text{enroll\_time}]$, and the analysis occurs at calendar time
+$\text{total} = \text{enroll\_time}+\text{follow\_time}$, so a subject
+entering at $u$ is followed for $\text{total}-u$ time units (this is what
+`expected_events()` implements -- accrual is uniform, not exponential,
+matching the `runif()` draws used on the simulation side and the constant
+$1/\text{enroll\_time}$ density below).
+
+$$
+p_{\text{event}}(S) = \begin{cases}
+1-S(\text{follow\_time}) & \text{enroll\_time}=0 \text{ (everyone enrolled at once)} \\[6pt]
+\dfrac{1}{\text{enroll\_time}}\displaystyle\int_0^{\text{enroll\_time}} \big[1-S(\text{total}-u)\big]\,du & \text{enroll\_time}>0
+\end{cases}
+$$
+
+$$
+\boxed{d = n_T\cdot p_{\text{event}}(S_T) + n_C\cdot p_{\text{event}}(S_C)}
+$$
+
+$S_T, S_C$ take a different closed form depending on the baseline hazard
+assumption (piecewise exponential or Weibull; see the worked examples
+below), but the accrual-averaging step above is identical either way.
+The accompanying R code (`pos_functions.R`) additionally supports an
+independent dropout hazard, which replaces $p_{\text{event}}(S)$ with a
+competing-risks version that integrates the event-specific hazard against
+the joint survival of the event and dropout.
+
+**Test statistic (log-rank):**
+
+$$
+Z = \frac{O - E}{\sqrt{V}}
+$$
+
+$O$, $E$, $V$ are each sums, over every distinct event time $t_j$ in the
+pooled data, of quantities computed from a $2\times2$ at-risk table at
+that time: $n_j$ = total at risk (both arms), $n_{1j}$ = at risk in the
+treatment arm, $d_j$ = total events at $t_j$, $d_{1j}$ = events at $t_j$
+in the treatment arm. Under $H_0$, $d_{1j}$ follows a hypergeometric
+distribution given the margins of that table, with
+
+$$
+e_j = \frac{n_{1j}\,d_j}{n_j}, \qquad
+v_j = \frac{d_j(n_j-d_j)\,n_{1j}(n_j-n_{1j})}{n_j^2(n_j-1)}
+$$
+
+$$
+O=\sum_j d_{1j}, \qquad E=\sum_j e_j, \qquad V=\sum_j v_j
+$$
+
+**Small example.** Suppose there are two event times. At $t_1$: 20
+subjects at risk (10 per arm), 2 events occur, both in the control arm
+($d_{1,1}=0$). At $t_2$: 18 subjects remain at risk (9 per arm), 1 event
+occurs, in the treatment arm ($d_{1,2}=1$):
+
+$$
+e_1=\frac{10\times2}{20}=1, \quad v_1=\frac{2\times18\times10\times10}{20^2\times19}\approx0.474
+$$
+
+$$
+e_2=\frac{9\times1}{18}=0.5, \quad v_2=\frac{1\times17\times9\times9}{18^2\times17}=0.25
+$$
+
+$$
+O=0+1=1, \quad E=1+0.5=1.5, \quad V=0.474+0.25\approx0.724
+$$
+
+$$
+Z=\frac{1-1.5}{\sqrt{0.724}}\approx-0.588
+$$
+
+(negative here because fewer treatment-arm events occurred than expected
+under $H_0$ at $t_1$, offset only partly by $t_2$ -- in a real trial this
+sum runs over every event time in the data, not just two.)
+
+**Distribution of $Z$ (asymptotic, Schoenfeld):**
+
+$$
+Z \ \dot\sim\ N\!\left(\log(HR)\cdot\sqrt{d\,\phi(1-\phi)},\ 1\right)
+$$
+
+$$
+\delta = \frac{\log(\widehat{HR}_{P2}) - \theta_0}{\widehat{SE}}
+$$
+
+**Analytic PoS (one-sided):**
+
+$$
+\text{PoS}_{\text{analytic}} = \Phi(\delta - z_c)
+$$
+
+**Analytic PoS (two-sided):**
+
+$$
+\text{PoS}_{\text{analytic}} = \Phi(\delta - z_c) + \Phi(-\delta - z_c)
+$$
+
+**Simulated PoS** (one-sided):
+
+$$
+\text{PoS}_{\text{sim}} = \frac{1}{N_{\text{sim}}}\sum_{i=1}^{N_{\text{sim}}} \mathbb{1}\Big\{\,Z_i > z_c\,\Big\}
+$$
+
+where, for each $i=1,\dots,N_{\text{sim}}$, event/censoring times are drawn
+under the assumed true $HR=\widehat{HR}_{P2}$ and assumed control hazard
+$\lambda_C$ (e.g. $t_T^{(i)}\sim\text{Exp}(\lambda_C\cdot\widehat{HR}_{P2})$,
+$t_C^{(i)}\sim\text{Exp}(\lambda_C)$ under an exponential distribution (or weibull/piecewise-exponential if a different
+baseline hazard shape is assumed), administrative censoring from the
+planned accrual/follow-up design is applied, the log-rank test is run on
+the resulting simulated dataset to obtain $Z_i$ (use $|Z_i|>z_c$ for two-sided).
+
+### Worked example: piecewise exponential baseline
+
+The Schoenfeld formula above only needs $d$ and $\phi$; the baseline
+hazard shape only changes how $d$ gets derived. Here is a concrete
+example under a piecewise exponential control hazard, specified via
+segment medians (converted to rates as $\lambda=\log(2)/\text{median}$,
+same conversion as the plain exponential case) rather than raw hazard
+rates.
+
+Suppose $\widehat{HR}_{P2}=0.70$ (the Phase 2 estimate, used to generate
+the assumed treatment-arm hazard), planned $n_T=n_C=350$, 18 months of
+uniform accrual, 24 months of additional follow-up, and the control
+hazard assumed to change over time with segment medians of 12 months
+(months 0-6), 18 months (months 6-12), and 24 months (after month 12):
+
+$$
+\lambda_{C,1} = \frac{\log 2}{12}\approx0.0578, \quad
+\lambda_{C,2} = \frac{\log 2}{18}\approx0.0385, \quad
+\lambda_{C,3} = \frac{\log 2}{24}\approx0.0289 \ \ (\text{per month})
+$$
+
+with breakpoints at 6 and 12 months, and the treatment-arm hazard in
+each segment equal to $\widehat{HR}_{P2}$ times the control rate, per PH
+(e.g. $\lambda_{T,1}=0.70\times0.0578\approx0.0404$).
+
+Suppose further that the trial will test a **non-inferiority** hypothesis
+$H_0: HR=0.8$ rather than pure superiority, so $\theta_0=\log(0.8)\approx-0.223$.
+
+**Step 1: expected events.** Integrating the piecewise survival function
+over the accrual window (numerically, via `expected_events()`) gives
+
+$$
+d \approx 438.1
+$$
+
+**Step 2: SE and $\delta$.** With $\phi = 350/(350+350) = 0.5$,
+
+$$
+\widehat{SE} = \frac{1}{\sqrt{d\,\phi(1-\phi)}} = \frac{1}{\sqrt{438.1 \times 0.25}} \approx 0.0956
+$$
+
+$$
+\delta = \frac{\big|\log(\widehat{HR}_{P2}) - \theta_0\big|}{\widehat{SE}} = \frac{|\log(0.70)-\log(0.8)|}{0.0956} = \frac{0.1335}{0.0956} \approx 1.397
+$$
+
+(the magnitude is used here because the Phase 2 estimate, $HR=0.70$,
+is more beneficial than the margin $HR=0.8$, so this is the direction
+the one-sided test is set up to detect -- see the sign discussion in the
+Notation section).
+
+**Step 3: PoS.** At $\alpha=0.05$ one-sided, $z_c = \Phi^{-1}(0.95) \approx 1.645$:
+
+$$
+\text{PoS}_{\text{analytic}} = \Phi(1.397 - 1.645) = \Phi(-0.248) \approx 0.402
+$$
+
+matching `pos_tte(hr = 0.70, n_treat = 350, n_ctrl = 350, dist = "piecewise", breaks = c(6, 12), rates_ctrl = log(2)/c(12, 18, 24), enroll_time = 18, follow_time = 24)`
+in the accompanying R code (with $\theta_0=\log(0.8)$ applied by hand as
+above, since the current code's one-sided convention assumes a pure
+superiority margin of 0). Note PoS here is much lower than in a pure
+superiority test against $\theta_0=0$ -- testing against a $0.8$ margin
+is a much easier bar to clear than testing against $HR=1$, so the assumed
+effect ($HR=0.70$) is close enough to the margin that Phase 3 succeeding
+is close to a coin flip.
+
+### Worked example: Weibull baseline
+
+Same design as above ($\widehat{HR}_{P2}=0.70$, $\theta_0=\log(0.8)$,
+$n_T=n_C=350$, 18 months uniform accrual, 24 months follow-up), but now
+assume the control hazard follows a Weibull shape with
+$\text{shape}=1.5$ (hazard increasing over time) and a 12-month median.
+
+**Step 1: convert median to the scale parameter.** For Weibull,
+$\lambda_C = (\log 2)^{1/\text{shape}}/\text{median}$ (see the Notation
+discussion earlier: this differs from the exponential conversion
+whenever $\text{shape}\neq1$):
+
+$$
+\lambda_C = \frac{(\log 2)^{1/1.5}}{12} \approx \frac{0.783}{12} \approx 0.0653
+$$
+
+and the treatment scale under proportional hazards is
+$\lambda_T = \lambda_C\cdot HR^{1/\text{shape}} \approx 0.0653\times0.70^{1/1.5}\approx0.0515$.
+
+**Step 2: expected events.** Integrating the Weibull survival function
+over the accrual window (numerically, via `expected_events()`) gives
+
+$$
+d \approx 638.6
+$$
+
+more events than the piecewise case ($d\approx438$) with a comparable
+median, because the increasing Weibull hazard concentrates more events
+later in follow-up, and the longer 24-month follow-up window here
+captures them.
+
+**Step 3: SE, $\delta$, and PoS.** With $\phi=0.5$:
+
+$$
+\widehat{SE} = \frac{1}{\sqrt{638.6\times0.25}} \approx 0.0791, \qquad
+\delta = \frac{|\log(0.70)-\log(0.8)|}{0.0791} = \frac{0.1335}{0.0791} \approx 1.687
+$$
+
+$$
+\text{PoS}_{\text{analytic}} = \Phi(1.687 - 1.645) = \Phi(0.042) \approx 0.517
+$$
+
+matching `pos_tte(hr = 0.70, n_treat = 350, n_ctrl = 350, dist = "weibull", median_ctrl = 12, shape = 1.5, enroll_time = 18, follow_time = 24)`
+(again with $\theta_0=\log(0.8)$ applied by hand). Same Schoenfeld
+formula as always in Step 3; only $d$ (and, upstream of that, the
+median-to-scale conversion in Step 1) changed because of the
+distributional assumption -- and PoS is again far from the near-certain
+result a pure superiority test would give, because a $0.8$ margin is a
+much less demanding target than $HR=1$.

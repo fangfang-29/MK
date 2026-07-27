@@ -1,0 +1,686 @@
+--- pos_functions.R	2026-07-24 15:37:50.664084900 -0400
++++ pos_functions_proposed.R	2026-07-24 16:17:14.357217800 -0400
+@@ -16,15 +16,27 @@
+ ##   - binary           (two proportions; stratified Miettinen-Nurminen)
+ ##   - time-to-event    (log hazard ratio; log-rank / Schoenfeld)
+ ##
+-## TIME-TO-EVENT DESIGN MODEL (updated, gsDesign2-style structure):
++## NULL VALUE AND TEST DIRECTION (uniform across all three endpoints):
++##   Every endpoint takes theta0 = the null value on its own analysis scale and
++##   direction = the side on which the alternative lies:
++##       Z = sgn * (theta_hat - theta0) / SE,  sgn = +1 ("greater") / -1 ("less")
++##   so Z > 0 always means "evidence toward the alternative".
++##     continuous    : theta0 on the mean-difference scale, direction "greater"
++##     binary        : theta0 on the risk-difference scale, direction "greater"
++##     time-to-event : theta0 on the LOG HR scale,          direction "less"
++##   theta0 = 0 gives superiority; a non-zero theta0 gives non-inferiority
++##   (e.g. theta0 = -0.10 for binary, theta0 = log(1.3) for TTE).
++##   Two-sided power does not depend on direction; one-sided power does.
++##
++## TIME-TO-EVENT DESIGN MODEL (gsDesign2-style structure):
+ ##   * PROPORTIONAL HAZARDS: a single scalar hr (treat vs ctrl).
+ ##   * PIECEWISE-CONSTANT ENROLLMENT rates:
+ ##       enroll_rate = data.frame(duration, rate)
+ ##   * PIECEWISE-EXPONENTIAL failure and dropout rates (control arm):
+ ##       fail_rate = data.frame(duration, fail_rate, dropout_rate)
+-##     The treatment arm hazard is fail_rate * hr per period (PH);
+-##     dropout is shared by both arms. The last period is extended
+-##     indefinitely (as in gsDesign2).
++##     The treatment arm hazard is fail_rate * hr (PH); dropout is shared by
++##     both arms. The LAST period is extended indefinitely, so the last
++##     'duration' value is ignored (gsDesign2 convention).
+ ##   Expected events are computed in closed form (piecewise-exponential
+ ##   integrals; no numeric integration), following the architecture of
+ ##   gsDesign2: a single-arm core (.expected_event_1arm, cf.
+@@ -32,7 +44,7 @@
+ ##   cf. gsDesign2::pw_info) that splits enrollment by allocation and sets
+ ##   the experimental hazard to fail_rate * hr.
+ ##   The LEGACY interface (n_treat, n_ctrl, lambda_ctrl, hr, follow_time,
+-##   enroll_time) still works and now also accepts a scalar dropout_rate.
++##   enroll_time) still works and also accepts a scalar dropout_rate.
+ ##
+ ## Each endpoint has:
+ ##   - a summary extractor  ph2_summary_*()   (raw Phase 2 data -> summary stats)
+@@ -60,13 +72,13 @@
+ ## Normal-approximation power given a standardized effect (effect / SE under the
+ ## alternative), the null SE, and the design. Kept generic so all three
+ ## endpoints share one power engine.
+-##   z_effect = effect / se_alt         (signal-to-noise under alternative)
+-##   se_ratio = se_null / se_alt        (accounts for null vs alt variance, e.g. binary)
++##   z_effect = sgn * (theta - theta0) / se_alt   (signed: >0 = toward H1)
++##   se_ratio = se_null / se_alt                  (null vs alt variance, e.g. binary)
+ .normal_power <- function(z_effect, alpha, alternative, se_ratio = 1) {
+   zc <- .crit(alpha, alternative)
+-  upper <- pnorm(z_effect - zc * se_ratio)          # reject in the effect direction
++  upper <- pnorm(z_effect - zc * se_ratio)        # reject in the alternative direction
+   if (alternative == "two.sided") {
+-    lower <- pnorm(-z_effect - zc * se_ratio)        # reject in the opposite tail
++    lower <- pnorm(-z_effect - zc * se_ratio)     # reject in the opposite tail
+     upper + lower
+   } else {
+     upper
+@@ -91,45 +103,70 @@
+ ##   delta   : assumed effect (Phase 2 mean difference, treat - ctrl)
+ ##   sd      : assumed common within-arm SD (from Phase 2)
+ ##   n_treat, n_ctrl : PLANNED Phase 3 per-arm sample sizes
++##   theta0  : null mean difference (0 = superiority; e.g. -2 for a
++##             non-inferiority margin of 2 units on a "higher is better" scale)
++##   direction : side of theta0 on which the alternative lies
+ pos_continuous <- function(delta, sd, n_treat, n_ctrl = n_treat,
++                           theta0 = 0,
++                           direction = c("greater", "less"),
+                            alpha = 0.05,
+                            alternative = c("two.sided", "one.sided"),
+                            nsim = 10000, seed = NULL) {
+   alternative <- match.arg(alternative)
++  direction   <- match.arg(direction)
++  stopifnot(length(delta) == 1, is.finite(delta), sd > 0,
++            n_treat >= 2, n_ctrl >= 2, alpha > 0, alpha < 1)
++  sgn <- if (direction == "less") -1 else 1
++
+   se_alt <- sd * sqrt(1 / n_treat + 1 / n_ctrl)   # SE of the mean difference in P3
+   df     <- n_treat + n_ctrl - 2
+-  
++
+   ## Analytic: exact under the t-test via the non-central t distribution.
+-  ncp <- delta / se_alt
++  ## t = sgn * (dhat - theta0) / se_hat  =>  ncp = sgn * (delta - theta0) / se_alt
++  ncp <- sgn * (delta - theta0) / se_alt
+   if (alternative == "two.sided") {
+     tc <- qt(1 - alpha / 2, df)
+     pos_analytic <- pt(-tc, df, ncp) + (1 - pt(tc, df, ncp))
+   } else {
+     tc <- qt(1 - alpha, df)
+     pos_analytic <- 1 - pt(tc, df, ncp)
++    if (ncp < 0)
++      warning("Assumed effect is on the opposite side of theta0 from the alternative; PoS will be near 0.")
+   }
+-  
+-  ## Simulation: generate P3 arms and run the real t-test.
++
++  ## Simulation: generate P3 arms and run the real t-test. Done in blocks of
++  ## replicates to keep memory bounded; the RNG stream therefore differs from a
++  ## one-replicate-at-a-time loop.
+   pos_sim <- NA_real_
+   if (!is.null(nsim) && nsim > 0) {
+     if (!is.null(seed)) set.seed(seed)
+-    hits <- 0L
+-    for (i in seq_len(nsim)) {
+-      yt <- rnorm(n_treat, mean = delta, sd = sd)   # ctrl mean fixed at 0 (only diff matters)
+-      yc <- rnorm(n_ctrl,  mean = 0,     sd = sd)
+-      p  <- t.test(yt, yc, var.equal = TRUE,
+-                   alternative = if (alternative == "one.sided") "greater" else "two.sided")$p.value
+-      if (p < alpha) hits <- hits + 1L
++    blk  <- max(1L, floor(2e6 / max(n_treat, n_ctrl)))
++    hits <- 0L; done <- 0L
++    while (done < nsim) {
++      m  <- min(blk, nsim - done)
++      mt <- matrix(rnorm(m * n_treat, delta, sd), m)  # ctrl mean fixed at 0 (only diff matters)
++      mc <- matrix(rnorm(m * n_ctrl,  0,     sd), m)
++      dh <- rowMeans(mt) - rowMeans(mc)
++      vt <- rowSums((mt - rowMeans(mt))^2) / (n_treat - 1)
++      vc <- rowSums((mc - rowMeans(mc))^2) / (n_ctrl - 1)
++      se <- sqrt(((n_treat - 1) * vt + (n_ctrl - 1) * vc) / df *
++                   (1 / n_treat + 1 / n_ctrl))
++      ts <- sgn * (dh - theta0) / se
++      hits <- hits + sum(if (alternative == "two.sided") abs(ts) > tc else ts > tc)
++      done <- done + m
+     }
+     pos_sim <- hits / nsim
+   }
+-  
++  mc_se <- if (is.na(pos_sim)) NA_real_ else sqrt(pos_sim * (1 - pos_sim) / nsim)
++
+   structure(list(
+     endpoint = "continuous", method = "conditional power",
+     inputs = list(delta = delta, sd = sd, n_treat = n_treat, n_ctrl = n_ctrl,
++                  theta0 = theta0, direction = direction,
+                   alpha = alpha, alternative = alternative),
+     effect_size_d = delta / sd, se_phase3 = se_alt,
+-    pos_analytic = pos_analytic, pos_simulated = pos_sim, nsim = nsim
++    pos_analytic = pos_analytic, pos_simulated = pos_sim,
++    mc_se = mc_se, nsim = nsim
+   ), class = "pos_result")
+ }
+ 
+@@ -138,17 +175,17 @@
+ ## ---------------------------------------------------------------------------
+ ## The Phase 3 analysis is a stratified Miettinen-Nurminen (M&N) score test of
+ ## the common risk difference  RD = p_treat - p_ctrl  against a null value
+-## 'margin' (margin = 0 for superiority; a negative margin for non-inferiority
++## theta0 (theta0 = 0 for superiority; a negative theta0 for non-inferiority
+ ## when the event is a "good" outcome).
+ ##
+ ## Per stratum k the M&N score statistic uses the RESTRICTED MLE of the two
+-## proportions under the constraint p1 - p2 = margin, and a variance with the
++## proportions under the constraint p1 - p2 = theta0, and a variance with the
+ ## small-sample factor N_k/(N_k - 1). Strata are combined with weights w_k
+ ## (Mantel-Haenszel by default):
+ ##
+-##     Z = sum_k w_k (phat1_k - phat2_k - margin)
+-##         ------------------------------------------
+-##            sqrt( sum_k w_k^2 * Vtilde_k )
++##     Z = sgn * sum_k w_k (phat1_k - phat2_k - theta0)
++##              ------------------------------------------
++##                  sqrt( sum_k w_k^2 * Vtilde_k )
+ ##
+ ## Stratification is OPTIONAL: pass scalar rates for an unstratified test, or
+ ## length-K vectors of per-stratum rates for a K-stratum test.
+@@ -250,20 +287,34 @@
+ ##   strata_prop     : stratum prevalences (length K, need not sum to 1).
+ ##                     NULL => equal split when K > 1. Use the Phase 2 observed
+ ##                     prevalences (ph2_summary_binary_strat) or population rates.
+-##   margin          : null risk difference (0 = superiority; e.g. -0.10 for a
++##   theta0          : null risk difference (0 = superiority; e.g. -0.10 for a
+ ##                     10-point non-inferiority margin on a good outcome).
++##   margin          : old name for theta0, still accepted.
++##   direction       : side of theta0 on which the alternative lies.
+ ##   weights         : stratum weighting, "MH" (Mantel-Haenszel) or "inv_var".
++##                     inv_var weights are computed from the ASSUMED rates and
++##                     held fixed in the simulation, i.e. treated as known; a
++##                     real analysis estimates them from the data. The gap is
++##                     small and usually conservative.
+ pos_binary <- function(p_treat, p_ctrl, n_treat, n_ctrl = n_treat,
+-                       strata_prop = NULL, margin = 0,
++                       strata_prop = NULL, theta0 = 0, margin = NULL,
++                       direction = c("greater", "less"),
+                        weights = c("MH", "inv_var"),
+                        alpha = 0.05,
+                        alternative = c("two.sided", "one.sided"),
+                        nsim = 10000, seed = NULL) {
+   alternative <- match.arg(alternative)
++  direction   <- match.arg(direction)
+   weights     <- match.arg(weights)
++  if (!is.null(margin)) theta0 <- margin        # old argument name
+   K <- length(p_treat)
+-  stopifnot(length(p_ctrl) == K)
+-  
++  stopifnot(length(p_ctrl) == K,
++            all(p_treat >= 0 & p_treat <= 1), all(p_ctrl >= 0 & p_ctrl <= 1),
++            length(n_treat) == 1, length(n_ctrl) == 1, n_treat > 0, n_ctrl > 0,
++            abs(theta0) < 1, alpha > 0, alpha < 1,
++            is.null(strata_prop) || (length(strata_prop) == K && all(strata_prop > 0)))
++  sgn <- if (direction == "less") -1 else 1
++
+   ## Per-stratum sample sizes from prevalences.
+   if (K == 1) {
+     n1 <- n_treat; n2 <- n_ctrl
+@@ -272,53 +323,61 @@
+     n1 <- strat_sizes(n_treat, strata_prop)
+     n2 <- strat_sizes(n_ctrl,  strata_prop)
+   }
+-  
++  stopifnot(all(n1 >= 2), all(n2 >= 2))         # N/(N-1) factor needs N > 1
++
+   RD    <- p_treat - p_ctrl
+   V_alt <- p_treat * (1 - p_treat) / n1 + p_ctrl * (1 - p_ctrl) / n2   # unconstrained var
+   w <- if (weights == "MH") n1 * n2 / (n1 + n2) else 1 / V_alt         # stratum weights
+   zc <- .crit(alpha, alternative)
+-  
++
+   ## --- Analytic (conditional power) -----------------------------------------
+   ## Treat the assumed true rates as "expected" data to get the null variance.
+-  rm0  <- .mn_rmle(n1 * p_treat, n1, n2 * p_ctrl, n2, margin)
++  rm0  <- .mn_rmle(n1 * p_treat, n1, n2 * p_ctrl, n2, theta0)
+   V0   <- .mn_var0(rm0, n1, n2)
+-  effect  <- sum(w * (RD - margin))                 # E[numerator] under the truth
++  effect  <- sgn * sum(w * (RD - theta0))       # E[numerator] under the truth
+   se_null <- sqrt(sum(w^2 * V0))
+   se_alt  <- sqrt(sum(w^2 * V_alt))
+   pos_analytic <- .normal_power(z_effect = effect / se_alt, alpha = alpha,
+                                 alternative = alternative,
+                                 se_ratio = se_null / se_alt)
+-  
+-  ## --- Simulation: run the actual stratified M&N test -----------------------
++  if (alternative == "one.sided" && effect < 0)
++    warning("Assumed effect is on the opposite side of theta0 from the alternative; PoS will be near 0.")
++
++  ## --- Simulation: run the actual stratified M&N test, in blocks ------------
+   pos_sim <- NA_real_
+   if (!is.null(nsim) && nsim > 0) {
+     if (!is.null(seed)) set.seed(seed)
+-    hits <- 0L
+-    for (i in seq_len(nsim)) {
+-      x1 <- rbinom(K, n1, p_treat)
+-      x2 <- rbinom(K, n2, p_ctrl)
+-      rm <- .mn_rmle(x1, n1, x2, n2, margin)
+-      Vt <- .mn_var0(rm, n1, n2)
+-      num <- sum(w * (x1 / n1 - x2 / n2 - margin))
+-      den <- sqrt(sum(w^2 * Vt))
+-      z   <- if (den > 0) num / den else 0
+-      reject <- if (alternative == "two.sided") abs(z) > zc else z > zc
+-      if (isTRUE(reject)) hits <- hits + 1L
++    blk  <- max(1L, floor(2e5 / K))
++    hits <- 0L; done <- 0L
++    while (done < nsim) {
++      m  <- min(blk, nsim - done)
++      X1 <- matrix(rbinom(K * m, n1, p_treat), nrow = K)   # strata down the rows
++      X2 <- matrix(rbinom(K * m, n2, p_ctrl),  nrow = K)
++      rm <- .mn_rmle(as.vector(X1), rep(n1, m), as.vector(X2), rep(n2, m), theta0)
++      Vt <- matrix(.mn_var0(rm, rep(n1, m), rep(n2, m)), nrow = K)
++      num <- sgn * colSums(w * (X1 / n1 - X2 / n2 - theta0))
++      den <- sqrt(colSums(w^2 * Vt))
++      z   <- ifelse(den > 0, num / den, 0)
++      hits <- hits + sum(if (alternative == "two.sided") abs(z) > zc else z > zc)
++      done <- done + m
+     }
+     pos_sim <- hits / nsim
+   }
+-  
++  mc_se <- if (is.na(pos_sim)) NA_real_ else sqrt(pos_sim * (1 - pos_sim) / nsim)
++
+   structure(list(
+     endpoint = "binary",
+     method = sprintf("conditional power / stratified Miettinen-Nurminen (%s weights)",
+                      weights),
+     inputs = list(n_treat = n_treat, n_ctrl = n_ctrl, n_strata = K,
+-                  margin = margin, alpha = alpha, alternative = alternative),
++                  theta0 = theta0, direction = direction,
++                  alpha = alpha, alternative = alternative),
+     per_stratum = data.frame(p_treat = p_treat, p_ctrl = p_ctrl,
+                              n_treat = n1, n_ctrl = n2, RD = RD, weight = w),
+     risk_difference = sum(w * RD) / sum(w),   # weighted overall RD
+     se_phase3 = se_alt / sum(w),              # SE of the weighted RD estimate (RD scale)
+-    pos_analytic = pos_analytic, pos_simulated = pos_sim, nsim = nsim
++    pos_analytic = pos_analytic, pos_simulated = pos_sim,
++    mc_se = mc_se, nsim = nsim
+   ), class = "pos_result")
+ }
+ 
+@@ -332,11 +391,12 @@
+ ##                 -- piecewise-exponential CONTROL-arm failure hazard and
+ ##                 dropout hazard. Treatment hazard = fail_rate * hr (PH);
+ ##                 dropout is common to both arms. The LAST period is
+-##                 extended indefinitely.
++##                 extended indefinitely (its 'duration' value is ignored).
+ ##   total_duration : calendar time from start of enrollment to data cutoff.
+ ## Helper constructors (compatible with gsDesign2::define_*):
+ ##   define_enroll_rate(duration, rate)
+ ##   define_fail_rate(duration, fail_rate, dropout_rate)
++##   define_fail_rate(duration, median = ..., dropout_rate)   [exponential only]
+ ## ===========================================================================
+ 
+ define_enroll_rate <- function(duration, rate) {
+@@ -344,8 +404,18 @@
+   data.frame(duration = duration, rate = rate)
+ }
+ 
+-define_fail_rate <- function(duration, fail_rate, dropout_rate = 0) {
++## fail_rate may be given directly as a hazard, or as a per-period MEDIAN.
++## median -> hazard uses lambda = log(2)/median, valid ONLY for an exponential
++## (constant-hazard) period. With more than one period the medians are
++## period-local: the resulting curve's overall median is none of them.
++define_fail_rate <- function(duration, fail_rate = NULL, dropout_rate = 0,
++                             median = NULL) {
+   n <- length(duration)
++  stopifnot(xor(is.null(fail_rate), is.null(median)))
++  if (is.null(fail_rate)) {
++    stopifnot(all(median > 0))
++    fail_rate <- log(2) / median
++  }
+   stopifnot(length(fail_rate) %in% c(1L, n), length(dropout_rate) %in% c(1L, n),
+             all(duration > 0), all(fail_rate >= 0), all(dropout_rate >= 0))
+   data.frame(duration = duration,
+@@ -417,12 +487,12 @@
+   e_bounds <- cumsum(enroll_rate$duration)
+   E <- min(e_bounds[length(e_bounds)], T)     # entries after T contribute 0
+   if (E <= 0) return(0)
+-  
++
+   ## breakpoints in entry time u
+   br <- c(0, e_bounds[e_bounds < E], E)
+   f_break <- T - pw$t0[is.finite(pw$t0) & pw$t0 > 0]   # u where tau hits a period boundary
+   br <- sort(unique(c(br, f_break[f_break > 0 & f_break < E])))
+-  
++
+   total <- 0
+   for (k in seq_len(length(br) - 1)) {
+     u1 <- br[k]; u2 <- br[k + 1]
+@@ -466,9 +536,11 @@
+                             dropout_rate = 0,
+                             enroll_rate = NULL, fail_rate = NULL,
+                             total_duration = NULL, ratio = 1) {
++  stopifnot(length(hr) == 1, hr > 0, ratio > 0)
+   if (!is.null(enroll_rate) && !is.null(fail_rate)) {
+     ## ---- new piecewise path ----
+     if (is.null(total_duration)) stop("Provide total_duration with enroll_rate/fail_rate.")
++    stopifnot(total_duration > 0)
+     q_e <- ratio / (1 + ratio); q_c <- 1 - q_e
+     enroll_c <- transform(enroll_rate, rate = rate * q_c)
+     enroll_e <- transform(enroll_rate, rate = rate * q_e)
+@@ -481,6 +553,7 @@
+   if (is.null(n_treat) || is.null(lambda_ctrl) || is.null(follow_time))
+     stop("Provide either (enroll_rate, fail_rate, total_duration) or the legacy arguments.")
+   if (is.null(n_ctrl)) n_ctrl <- n_treat
++  stopifnot(lambda_ctrl >= 0, follow_time > 0, enroll_time >= 0)
+   fr_c <- define_fail_rate(duration = 1e6, fail_rate = lambda_ctrl,
+                            dropout_rate = dropout_rate)
+   fr_e <- define_fail_rate(duration = 1e6, fail_rate = lambda_ctrl * hr,
+@@ -528,15 +601,20 @@
+ ## Phase 3 PoS for a time-to-event endpoint (log-rank; Schoenfeld analytic).
+ ## Three ways to call it:
+ ##   (A) Analytic only          -> hr + n_events (target Phase 3 event count).
++##                                 Allocation comes from alloc, or from ratio
++##                                 if alloc is not given.
+ ##   (B) Legacy design          -> hr, per-arm n, lambda_ctrl (or median_ctrl),
+ ##                                 follow_time, optional enroll_time and
+ ##                                 dropout_rate. Exponential failure, uniform
+ ##                                 accrual.
+-##   (C) Piecewise design (new) -> hr, enroll_rate, fail_rate, total_duration,
++##   (C) Piecewise design       -> hr, enroll_rate, fail_rate, total_duration,
+ ##                                 ratio. Piecewise enrollment + piecewise
+ ##                                 exponential failure/dropout, PH via scalar hr.
+-## alloc = proportion allocated to treatment (used only in path A; paths B/C
+-## derive it from the design).
++## Null value: theta0 on the LOG HR scale, or theta0_hr on the HR scale.
++##   superiority     : theta0 = 0
++##   non-inferiority : theta0_hr = 1.3, direction = "less"
++## direction = "less" (default) means hr < exp(theta0) is the alternative, i.e.
++## hazard reduction is benefit.
+ pos_tte <- function(hr,
+                     n_events = NULL,
+                     n_treat = NULL, n_ctrl = NULL,
+@@ -545,22 +623,36 @@
+                     dropout_rate = 0,
+                     enroll_rate = NULL, fail_rate = NULL,
+                     total_duration = NULL, ratio = 1,
+-                    alloc = 0.5,
++                    alloc = NULL,
++                    theta0 = 0, theta0_hr = NULL,
++                    direction = c("less", "greater"),
+                     alpha = 0.05,
+                     alternative = c("two.sided", "one.sided"),
+-                    nsim = 5000, seed = NULL) {
++                    nsim = 10000, seed = NULL) {
+   alternative <- match.arg(alternative)
++  direction   <- match.arg(direction)
++  stopifnot(length(hr) == 1, hr > 0, ratio > 0, alpha > 0, alpha < 1)
++  if (!is.null(theta0_hr)) {
++    stopifnot(theta0_hr > 0)
++    theta0 <- log(theta0_hr)
++  }
++  sgn   <- if (direction == "less") -1 else 1
+   loghr <- log(hr)
+-  if (is.null(lambda_ctrl) && !is.null(median_ctrl)) lambda_ctrl <- log(2) / median_ctrl
+-  
++  if (is.null(lambda_ctrl) && !is.null(median_ctrl)) {
++    stopifnot(median_ctrl > 0)
++    lambda_ctrl <- log(2) / median_ctrl        # exponential only
++  }
++
+   ## ---- normalize the design to the piecewise representation ----
+   piecewise_in <- !is.null(enroll_rate) && !is.null(fail_rate)
+   legacy_in    <- !is.null(n_treat) && !is.null(lambda_ctrl) && !is.null(follow_time)
+   do_sim <- piecewise_in || legacy_in
+-  
++  if (is.null(alloc)) alloc <- ratio / (1 + ratio)   # path A honours ratio
++
+   design <- NULL
+   if (piecewise_in) {
+     if (is.null(total_duration)) stop("Provide total_duration with enroll_rate/fail_rate.")
++    stopifnot(total_duration > 0)
+     q_e <- ratio / (1 + ratio)
+     N   <- sum(enroll_rate$duration * enroll_rate$rate)
+     n_e <- round(N * q_e); n_c <- round(N) - n_e
+@@ -573,6 +665,7 @@
+     alloc <- q_e
+   } else if (legacy_in) {
+     if (is.null(n_ctrl)) n_ctrl <- n_treat
++    stopifnot(follow_time > 0, enroll_time >= 0)
+     total <- enroll_time + follow_time
+     er <- if (enroll_time > 0)
+       define_enroll_rate(duration = enroll_time, rate = 1 / enroll_time)  # shape only
+@@ -585,7 +678,8 @@
+       n_treat = n_treat, n_ctrl = n_ctrl, total = total)
+     alloc <- n_treat / (n_treat + n_ctrl)
+   }
+-  
++  stopifnot(alloc > 0, alloc < 1)
++
+   ## ---- expected events (analytic, closed form) ----
+   if (is.null(n_events) && do_sim) {
+     ev1 <- function(enr, fr, n) {
+@@ -596,13 +690,23 @@
+       ev1(design$enroll_c, design$fail_c, design$n_ctrl)
+   }
+   if (is.null(n_events)) stop("Provide n_events, or a legacy design, or a piecewise design.")
+-  
++  stopifnot(n_events > 0)
++
+   ## Analytic (Schoenfeld): SE(log HR) = 1 / sqrt(d * alloc * (1 - alloc)).
+-  se_alt <- 1 / sqrt(n_events * alloc * (1 - alloc))
+-  pos_analytic <- .normal_power(z_effect = abs(loghr) / se_alt,
++  ## Signed effect, so an hr on the wrong side of theta0 correctly gives a
++  ## near-zero one-sided PoS (two-sided PoS is unchanged, by symmetry).
++  se_alt   <- 1 / sqrt(n_events * alloc * (1 - alloc))
++  z_effect <- sgn * (loghr - theta0) / se_alt
++  pos_analytic <- .normal_power(z_effect = z_effect,
+                                 alpha = alpha, alternative = alternative)
+-  
+-  ## ---- Simulation: piecewise-exp survival + dropout, admin censoring, log-rank
++  if (alternative == "one.sided" && z_effect < 0)
++    warning("Assumed hr is on the opposite side of theta0 from the alternative; PoS will be near 0.")
++
++  ## ---- Simulation: piecewise-exp survival + dropout, admin censoring -------
++  ## theta0 = 0 uses the log-rank test; a non-zero theta0 has no log-rank
++  ## analogue, so the Cox Wald statistic (theta_hat - theta0)/se is used there.
++  ## Group levels are pinned with factor(), so the sign of the log-rank z never
++  ## depends on label text or on survdiff's output ordering.
+   pos_sim <- NA_real_
+   if (do_sim && !is.null(nsim) && nsim > 0) {
+     if (!has_survival) {
+@@ -610,6 +714,7 @@
+     } else {
+       if (!is.null(seed)) set.seed(seed)
+       zc <- .crit(alpha, alternative)
++      use_logrank <- abs(theta0) < 1e-12
+       n_t <- design$n_treat; n_c <- design$n_ctrl
+       hits <- 0L
+       for (i in seq_len(nsim)) {
+@@ -619,35 +724,44 @@
+                 .rpwexp(n_c, design$fail_c$duration, design$fail_c$fail_rate))
+         dd <- c(.rpwexp(n_t, design$fail_e$duration, design$fail_e$dropout_rate),
+                 .rpwexp(n_c, design$fail_c$duration, design$fail_c$dropout_rate))
+-        grp <- c(rep("treat", n_t), rep("ctrl", n_c))
++        x  <- c(rep(1, n_t), rep(0, n_c))            # 1 = treat
+         ## drop subjects enrolled after the data cutoff (possible if the
+         ## enrollment table extends beyond total_duration)
+         keep <- entry < design$total
+-        entry <- entry[keep]; tt <- tt[keep]; dd <- dd[keep]; grp <- grp[keep]
++        entry <- entry[keep]; tt <- tt[keep]; dd <- dd[keep]; x <- x[keep]
+         cal_end <- design$total - entry              # entry -> analysis cutoff
+         cens <- pmin(dd, cal_end)                    # dropout or admin censoring
+         obs  <- pmin(tt, cens)
+         ev   <- as.integer(tt <= cens)
+         if (sum(ev) == 0) next
+-        sd_fit <- survival::survdiff(survival::Surv(obs, ev) ~ grp)
+-        chisq  <- sd_fit$chisq
+-        ## signed z: positive when treatment has fewer events than expected (benefit).
+-        idx <- grep("treat", names(sd_fit$n))
+-        o_e <- sd_fit$obs[idx] - sd_fit$exp[idx]
+-        z <- sign(-o_e) * sqrt(chisq)
++        z <- tryCatch({
++          if (use_logrank) {
++            g <- factor(x, levels = c(0, 1), labels = c("ctrl", "treat"))
++            fit <- survival::survdiff(survival::Surv(obs, ev) ~ g)
++            ## obs - exp in the treat arm: > 0 means log HR > 0 (harm)
++            sgn * sign(fit$obs[2] - fit$exp[2]) * sqrt(fit$chisq)
++          } else {
++            fit <- survival::coxph(survival::Surv(obs, ev) ~ x)
++            sgn * (unname(coef(fit)[1]) - theta0) / sqrt(vcov(fit)[1, 1])
++          }
++        }, error = function(e) NA_real_)
++        if (is.na(z)) next
+         reject <- if (alternative == "two.sided") abs(z) > zc else z > zc
+         if (isTRUE(reject)) hits <- hits + 1L
+       }
+       pos_sim <- hits / nsim
+     }
+   }
+-  
++  mc_se <- if (is.na(pos_sim)) NA_real_ else sqrt(pos_sim * (1 - pos_sim) / nsim)
++
+   structure(list(
+     endpoint = "time-to-event", method = "conditional power",
+     inputs = list(hr = hr, n_events = round(n_events, 1), alloc = alloc,
++                  theta0 = theta0, direction = direction,
+                   alpha = alpha, alternative = alternative),
+     log_hr = loghr, se_phase3 = se_alt, expected_events = n_events,
+-    pos_analytic = pos_analytic, pos_simulated = pos_sim, nsim = nsim
++    pos_analytic = pos_analytic, pos_simulated = pos_sim,
++    mc_se = mc_se, nsim = nsim
+   ), class = "pos_result")
+ }
+ 
+@@ -666,10 +780,13 @@
+ }
+ 
+ print.pos_result <- function(x, ...) {
++  ## collapse each input to one "name=value" chunk; vector inputs stay together
++  inp <- paste(mapply(function(nm, v)
++    paste0(nm, "=", paste(format(v, digits = 4, trim = TRUE), collapse = "/")),
++    names(x$inputs), x$inputs), collapse = ", ")
+   cat("Probability of Success  (", x$method, ")\n", sep = "")
+   cat("Endpoint         :", x$endpoint, "\n")
+-  cat("Design/inputs    :",
+-      paste(names(x$inputs), unlist(x$inputs), sep = "=", collapse = ", "), "\n")
++  cat("Design/inputs    :", inp, "\n")
+   if (!is.null(x$effect_size_d)) cat("Std. effect (d)  :", round(x$effect_size_d, 4), "\n")
+   if (!is.null(x$risk_difference)) cat("Risk difference  :", round(x$risk_difference, 4),
+                                        if (!is.null(x$inputs$n_strata) && x$inputs$n_strata > 1)
+@@ -678,15 +795,19 @@
+   cat("SE (Phase 3)     :", round(x$se_phase3, 5), "\n")
+   cat("-----------------------------------------------\n")
+   cat("PoS (analytic)   :", sprintf("%.4f", x$pos_analytic), "\n")
+-  if (!is.na(x$pos_simulated))
++  if (!is.na(x$pos_simulated)) {
+     cat("PoS (simulated)  :", sprintf("%.4f", x$pos_simulated),
+-        sprintf("  [%d sims]", x$nsim), "\n")
++        sprintf("  [%d sims, MC SE %.4f]", x$nsim, x$mc_se), "\n")
++    d <- x$pos_analytic - x$pos_simulated
++    cat("Difference       :", sprintf("%+.4f", d),
++        if (is.finite(x$mc_se) && x$mc_se > 0) sprintf("  (%.1f MC SE)", d / x$mc_se) else "", "\n")
++  }
+   invisible(x)
+ }
+ 
+ ###############################################################################
+ ## WORKED EXAMPLES
+-## Run with:  Rscript "pos functions.R"   (or source() then call run_examples())
++## Run with:  Rscript pos_functions.R   (or source() then call run_examples())
+ ###############################################################################
+ 
+ run_examples <- function() {
+@@ -699,14 +820,21 @@
+                         alpha = 0.05, alternative = "two.sided",
+                         nsim = 10000, seed = 1)
+   print(ex1)
+-  
++
++  cat("\n(Non-inferiority variant: theta0 = -2.0, one-sided 2.5%)\n")
++  ex1b <- pos_continuous(delta = 0, sd = 8.0, n_treat = 300,
++                         theta0 = -2.0, direction = "greater",
++                         alpha = 0.025, alternative = "one.sided",
++                         nsim = 10000, seed = 11)
++  print(ex1b)
++
+   ## Same example starting from raw Phase 2 data instead of summary stats:
+   set.seed(42)
+   y_c <- rnorm(60, 10, 8); y_t <- rnorm(60, 13, 8)
+   s <- ph2_summary_continuous(y_t, y_c)
+   cat("\n(Recomputed from raw P2 data: delta =", round(s$delta, 2),
+       ", pooled SD =", round(s$sd, 2), ")\n")
+-  
++
+   cat("\n=================================================================\n")
+   cat("EXAMPLE 2a  Binary endpoint -- UNSTRATIFIED Miettinen-Nurminen\n")
+   cat("Phase 2 response rates: treatment 0.45, control 0.30.\n")
+@@ -716,7 +844,7 @@
+                     alpha = 0.05, alternative = "two.sided",
+                     nsim = 10000, seed = 2)
+   print(ex2)
+-  
++
+   cat("\n=================================================================\n")
+   cat("EXAMPLE 2b  Binary endpoint -- STRATIFIED M&N (3 strata)\n")
+   cat("Stratifier: disease severity (mild/moderate/severe).\n")
+@@ -727,18 +855,18 @@
+                      p_ctrl  = c(0.25, 0.30, 0.40),
+                      n_treat = 220, n_ctrl = 220,
+                      strata_prop = c(0.40, 0.35, 0.25),
+-                     margin = 0, weights = "MH",
++                     theta0 = 0, weights = "MH",
+                      alpha = 0.05, alternative = "two.sided",
+                      nsim = 10000, seed = 22)
+   print(ex2b)
+   cat("Per-stratum design:\n"); print(ex2b$per_stratum, row.names = FALSE)
+-  
+-  cat("\n(Non-inferiority variant: margin = -0.10, one-sided 2.5%)\n")
++
++  cat("\n(Non-inferiority variant: theta0 = -0.10, one-sided 2.5%)\n")
+   ex2c <- pos_binary(p_treat = 0.30, p_ctrl = 0.30, n_treat = 300,
+-                     margin = -0.10, alpha = 0.025, alternative = "one.sided",
++                     theta0 = -0.10, alpha = 0.025, alternative = "one.sided",
+                      nsim = 5000, seed = 23)
+   print(ex2c)
+-  
++
+   cat("\n=================================================================\n")
+   cat("EXAMPLE 3a  Time-to-event -- legacy interface (+ dropout)\n")
+   cat("Phase 2 estimated HR = 0.70 (treatment vs control).\n")
+@@ -751,7 +879,7 @@
+                  alpha = 0.05, alternative = "two.sided",
+                  nsim = 3000, seed = 3)
+   print(ex3)
+-  
++
+   cat("\n=================================================================\n")
+   cat("EXAMPLE 3b  Time-to-event -- PIECEWISE design (gsDesign2-style)\n")
+   cat("Enrollment ramp-up: 10/mo for 6 mo, then 25/mo for 22 mo (N = 610).\n")
+@@ -762,18 +890,30 @@
+                   enroll_rate = define_enroll_rate(duration = c(6, 22),
+                                                    rate = c(10, 25)),
+                   fail_rate = define_fail_rate(duration = c(3, 100),
+-                                               fail_rate = log(2) / c(9, 18),
++                                               median = c(9, 18),
+                                                dropout_rate = 0.001),
+                   total_duration = 40, ratio = 1,
+                   alpha = 0.05, alternative = "two.sided",
+                   nsim = 3000, seed = 33)
+   print(ex3b)
+-  
+-  cat("\n(Analytic-only TTE from a target event count, no simulation:)\n")
+-  ex3c <- pos_tte(hr = 0.70, n_events = 250, alloc = 0.5,
++
++  cat("\n(Analytic-only TTE from a target event count, 2:1 randomization:)\n")
++  ex3c <- pos_tte(hr = 0.70, n_events = 250, ratio = 2,
+                   alpha = 0.05, alternative = "two.sided", nsim = 0)
+   print(ex3c)
+-  
++
++  cat("\n=================================================================\n")
++  cat("EXAMPLE 3d  Time-to-event -- NON-INFERIORITY, margin HR = 1.30\n")
++  cat("Phase 2 HR = 1.05; 350/arm, control median 12 mo, 18 mo accrual,\n")
++  cat("12 mo follow-up; one-sided 2.5% test of H0: HR >= 1.30.\n")
++  cat("=================================================================\n")
++  ex3d <- pos_tte(hr = 1.05, n_treat = 350, n_ctrl = 350,
++                  median_ctrl = 12, enroll_time = 18, follow_time = 12,
++                  theta0_hr = 1.30, direction = "less",
++                  alpha = 0.025, alternative = "one.sided",
++                  nsim = 3000, seed = 34)
++  print(ex3d)
++
+   cat("\n=================================================================\n")
+   cat("EXAMPLE 4  Same call via the prob_success() dispatcher\n")
+   cat("=================================================================\n")
+@@ -782,7 +922,7 @@
+   invisible(NULL)
+ }
+ 
+-## Auto-run examples when executed as a script (Rscript "pos functions.R").
++## Auto-run examples when executed as a script (Rscript pos_functions.R).
+ if (!interactive() && sys.nframe() == 0L) {
+   run_examples()
+-}
+\ No newline at end of file
++}
